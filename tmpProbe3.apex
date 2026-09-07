@@ -1,0 +1,10 @@
+Account a = new Account(Name='Probe4', Email_Communications__c=true);
+insert a;
+Case c = new Case(Subject='Probe4', Status='New', AccountId=a.Id);
+insert c;
+Case oldCase = [SELECT Id, Status, AccountId, OwnerId FROM Case WHERE Id = :c.Id LIMIT 1];
+Case newCase = [SELECT Id, Status, AccountId, OwnerId FROM Case WHERE Id = :c.Id LIMIT 1];
+newCase.Status = 'Reopened';
+System.debug('before call: emailInvocations=' + Limits.getEmailInvocations());
+CaseTriggerHandler.handleAfterUpdate(new List<Case>{ newCase }, new Map<Id, Case>{ oldCase.Id => oldCase });
+System.debug('after call: emailInvocations=' + Limits.getEmailInvocations());

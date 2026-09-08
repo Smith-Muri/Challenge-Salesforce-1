@@ -1,18 +1,20 @@
 public with sharing class CaseTriggerHandler {
 
     public static void handleAfterUpdate(List<Case> newCases, Map<Id, Case> oldCasesMap) {
-        Set<Id> caseIdsToProcess = new Set<Id>();
         Set<Id> accountIds = new Set<Id>();
+        Set<Id> ownerIds = new Set<Id>();
 
         for (Case c : newCases) {
             Case oldCase = oldCasesMap.get(c.Id);
-            if (c.Status == 'Reopened' && oldCase.Status != 'Reopened' && c.AccountId != null) {
-                caseIdsToProcess.add(c.Id);
+            if (shouldNotify(c, oldCase)) {
                 accountIds.add(c.AccountId);
+                if (isUserOwner(c.OwnerId)) {
+                    ownerIds.add(c.OwnerId);
+                }
             }
         }
 
-        if (caseIdsToProcess.isEmpty()) {
+        if (accountIds.isEmpty()) {
             return;
         }
 
@@ -36,34 +38,29 @@ public with sharing class CaseTriggerHandler {
             templateId = templates[0].Id;
         }
 
+        Map<Id, User> ownerUsers = new Map<Id, User>();
+        if (!ownerIds.isEmpty()) {
+            ownerUsers = new Map<Id, User>([
+                SELECT Id, Email
+                FROM User
+                WHERE Id IN :ownerIds
+            ]);
+        }
+
         List<Messaging.SingleEmailMessage> emailsToSend = new List<Messaging.SingleEmailMessage>();
 
-        List<Case> casesToNotify = [
-            SELECT Id, OwnerId, AccountId
-            FROM Case
-            WHERE Id IN :caseIdsToProcess
-            WITH USER_MODE
-        ];
-
-        for (Case c : casesToNotify) {
-            if (eligibleAccounts.containsKey(c.AccountId)) {
+        for (Case c : newCases) {
+            Case oldCase = oldCasesMap.get(c.Id);
+            if (shouldNotify(c, oldCase) && eligibleAccounts.containsKey(c.AccountId)) {
                 Messaging.SingleEmailMessage email;
 
-                if (templateId != null && c.OwnerId != null && String.valueOf(c.OwnerId).startsWith('005')) {
+                if (templateId != null && isUserOwner(c.OwnerId)) {
                     email = Messaging.renderStoredEmailTemplate(templateId, c.OwnerId, c.Id);
                 } else {
                     String recipientEmail = UserInfo.getUserEmail();
-                    if (c.OwnerId != null && String.valueOf(c.OwnerId).startsWith('005')) {
-                        List<User> ownerUsers = [
-                            SELECT Email
-                            FROM User
-                            WHERE Id = :c.OwnerId
-                            LIMIT 1
-                        ];
-
-                        if (!ownerUsers.isEmpty() && !String.isBlank(ownerUsers[0].Email)) {
-                            recipientEmail = ownerUsers[0].Email;
-                        }
+                    User ownerUser = ownerUsers.get(c.OwnerId);
+                    if (ownerUser != null && !String.isBlank(ownerUser.Email)) {
+                        recipientEmail = ownerUser.Email;
                     }
 
                     if (String.isBlank(recipientEmail)) {
@@ -72,8 +69,8 @@ public with sharing class CaseTriggerHandler {
 
                     email = new Messaging.SingleEmailMessage();
                     email.setToAddresses(new List<String>{ recipientEmail });
-                    email.setSubject('Case Reopened');
-                    email.setPlainTextBody('A case has been reopened and requires attention.');
+                    email.setSubject(Label.Case_Reopened_Email_Subject);
+                    email.setPlainTextBody(Label.Case_Reopened_Email_Body);
                 }
 
                 email.setSaveAsActivity(false);
@@ -84,5 +81,16 @@ public with sharing class CaseTriggerHandler {
         if (!emailsToSend.isEmpty()) {
             Messaging.sendEmail(emailsToSend);
         }
+    }
+
+    @TestVisible
+    private static Boolean shouldNotify(Case newCase, Case oldCase) {
+        return newCase != null && oldCase != null && newCase.Status == 'Reopened' &&
+            oldCase.Status != 'Reopened' && newCase.AccountId != null;
+    }
+
+    @TestVisible
+    private static Boolean isUserOwner(Id ownerId) {
+        return ownerId != null && ownerId.getSObjectType() == User.sObjectType;
     }
 }

@@ -4,55 +4,83 @@ Salesforce DX is a development approach that brings source-driven development, t
 
 This project template gets you started with the tools and structure you need to build Salesforce applications using source control, scratch orgs, and the Salesforce CLI.
 
-## Prerequisites
+# Challenge Salesforce 1
 
-Before you start, make sure you have:
+## Objective
 
-- **Salesforce CLI** - Download from [developer.salesforce.com/tools/salesforcecli](https://developer.salesforce.com/tools/salesforcecli). See [Install Salesforce CLI](https://developer.salesforce.com/docs/atlas.en-us.sfdx_setup.meta/sfdx_setup/sfdx_setup_install_cli.htm) for details.
-- **VS Code with Salesforce Extension Pack** - See [Installation Instructions](https://developer.salesforce.com/docs/platform/sfvscode-extensions/guide/install.html) for details. Includes the Agentforce Vibes extension.
-- **A development org** - Sign up for a free Developer Edition org [here](https://developer.salesforce.com/signup).
-- **Dev Hub enabled** (optional, required to create scratch orgs) - You can enable Dev Hub in your development org under Setup > Dev Hub.  See [Provide Developers Access to Salesforce DX Tools](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_setup_dx_tools.htm).
+When a Case changes from a status other than `Reopened` to `Reopened`, notify its owner only when the related Account explicitly allows communications.
 
-## Project Structure
+## Business Rules
 
-Your DX project follows this structure:
+- The transition to `Reopened` is required.
+- An Account is required and `Account.Email_Communications__c` must be `true`.
+- A Case owner must be a User. Queue owners are intentionally ignored because this challenge has no queue recipient policy.
+- The owner is always the recipient. The executing user is never used as a fallback.
+- The optional Email Template has DeveloperName `Case_Reopened_Notification`.
+- If the template is unavailable, Custom Labels provide the subject and plain-text body.
+- Cases that fail any rule are ignored without sending email.
 
-- **`force-app/main/default/`** - Your metadata source files live in this default package directory. You can configure additional package directories in the `sfdx-project.json` file.
-- **`config/`** - Scratch org definitions and project settings
-- **`scripts/`** - Automation scripts for common tasks
-- **`sfdx-project.json`** - Project manifest that defines package directories, namespace, API version, and other project-level settings
+## Architecture
 
-See [Salesforce DX Project Configuration](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_ws_config.htm).
+```text
+Case
+	-> CaseTrigger
+	-> CaseTriggerHandler
+	-> Account eligibility
+	-> User owner resolution
+	-> Email construction
+	-> Messaging.sendEmail()
+```
 
-## Get Started
+The trigger is only an entry point. The handler identifies eligible transitions once, queries Accounts and Users in bulk, and makes one bulk email invocation.
 
-Ready to start developing? The [Get Started with Salesforce DX](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/sfdx_dev_get_started_dx.htm) guide walks you through your first project, from creating a scratch org to creating a simple Apex class or LWC to deploying your code to a sandbox.
+## Security
 
-## Common Salesforce CLI Commands
+`CaseTriggerHandler` uses `with sharing`. Account eligibility is queried with explicit `WITH SYSTEM_MODE` because the business opt-in field must be readable for the decision even when a profile does not expose it; record sharing still applies through the class sharing mode. Owner Users are resolved with `WITH USER_MODE` so recipient access is respected. The custom field must be included in the deploying permission model. Missing Account authorization produces no email.
 
-Here are common CLI commands that you'll use the most:
+## Bulkification
 
-- `sf org login web`: Authorize an org
-- `sf org open`: Open your org in a browser
-- `sf org create scratch`: Create a scratch org
-- `sf project deploy start`: Deploy metadata to your org
-- `sf project retrieve start`: Retrieve metadata from your org
-- `sf template generate <artifact>`: Scaffold new components, such as Apex classes and triggers, LWC components, Lightning apps, and more
-- `sf apex <command>`: Run Apex tests, run anonymous Apex blocks, and view logs
-- `sf data <command>`: Work with test data
-- `sf alias <command>`: Manage org aliases
-- `sf config <command>`: Configure CLI settings
+The handler uses Sets for Account and User IDs and Maps for resolution. There is no SOQL or DML inside a loop. It iterates the trigger records once to identify transitions, then iterates only `casesToNotify` to construct messages. Messages are grouped by User owner so one owner receives at most one message per transaction, avoiding Salesforce's individual-email limit while still sending through one `Messaging.sendEmail()` call.
 
-## Use Agentforce Vibes to Build Lightning Apps
+## Email Configuration
 
-Transform your ideas into custom Lightning apps that extend CRM workflows directly in Lightning Experience. Through natural conversations with Agentforce Vibes, implement custom objects and fields, complex business logic, and dynamic UI components. See [Build a Lightning App Using Agentforce Vibes](https://developer.salesforce.com/docs/platform/einstein-for-devs/guide/lexapp-overview.html).
+The Apex supports two deployment modes:
 
-## Additional Resources
+1. Preferred: deploy an Email Template with DeveloperName `Case_Reopened_Notification`, configured for Case merge fields.
+2. Fallback: if that template is absent, the handler uses `Case_Reopened_Email_Subject` and `Case_Reopened_Email_Body` Custom Labels and addresses the owner email explicitly.
 
-- [Agentforce Vibes Developer Guide](https://developer.salesforce.com/docs/platform/einstein-for-devs/guide/einstein-overview.html)
-- [Salesforce CLI Installation Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_setup.meta/sfdx_setup/sfdx_setup_intro.htm)
-- [Salesforce DX Developer Guide](https://developer.salesforce.com/docs/atlas.en-us.sfdx_dev.meta/sfdx_dev/)
-- [Salesforce CLI Command Reference](https://developer.salesforce.com/docs/atlas.en-us.sfdx_cli_reference.meta/sfdx_cli_reference/)
-- [Salesforce CLI Plugin Development Guide](https://developer.salesforce.com/docs/platform/salesforce-cli-plugin/guide/conceptual-overview.html)
-- [Salesforce VS Code Extensions Documentation](https://developer.salesforce.com/tools/vscode/)
+The template is not currently versioned in this repository because no EmailTemplate metadata exists in the source. Create it manually or add its metadata before deployment when template content is required. In either mode, `SaveAsActivity` is false.
 
+## Testing
+
+`CaseTriggerTest` covers:
+
+- Reopened with Account opt-in and owner recipient.
+- Email construction, subject, body, recipient, and activity setting.
+- Already Reopened and non-Reopened transitions.
+- Account opt-out and missing Account.
+- Queue owner behavior.
+- 200 mixed Cases with only 100 authorized notifications.
+- Multiple Case owners receiving their own messages.
+
+Run local project checks with `npm install`, `npm run prettier:verify`, and `npm run lint`. Apex tests require an authorized Salesforce org:
+
+```bash
+sf project deploy start --source-dir force-app --target-org YOUR_ORG --test-level RunLocalTests
+```
+
+## Deployment
+
+Deploy the `force-app` package, including:
+
+- `CaseTrigger` and `CaseTriggerHandler`.
+- `CaseTriggerTest`.
+- `Account.Email_Communications__c`.
+- Custom Labels used by the fallback email.
+- An Email Template with DeveloperName `Case_Reopened_Notification` when template rendering is desired.
+
+The scratch definition is in `config/project-scratch-def.json`. No org IDs, credentials, or secrets are stored in this repository.
+
+## CI/CD
+
+`.github/workflows/validate.yml` runs dependency installation, Prettier verification, and lint. Salesforce validation runs only when the repository secret `SF_TARGET_USERNAME` is configured; authentication must be supplied by the repository's Salesforce CI setup. The workflow does not deploy automatically to production.

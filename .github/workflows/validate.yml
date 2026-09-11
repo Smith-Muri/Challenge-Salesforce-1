@@ -1,0 +1,37 @@
+name: Validate Salesforce project
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  static-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run prettier:verify
+      - run: npm run lint
+
+  salesforce-validation:
+    if: ${{ secrets.SF_TARGET_USERNAME != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --global @salesforce/cli
+      - name: Authenticate Salesforce CLI
+        env:
+          SF_AUTH_URL: ${{ secrets.SF_AUTH_URL }}
+        run: sf org login sfdx-url --sfdx-url-stdin --alias ci-org <<< "$SF_AUTH_URL"
+      - name: Validate metadata and Apex tests
+        env:
+          SF_TARGET_USERNAME: ${{ secrets.SF_TARGET_USERNAME }}
+        run: sf project deploy start --source-dir force-app --target-org "$SF_TARGET_USERNAME" --dry-run --test-level RunLocalTests
